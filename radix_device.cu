@@ -57,29 +57,24 @@ void cudaRadixSort(int *d_arr, int n)
 }
 
 // optimized version
-__device__ int getMax_opt(int arr[], int n)
-{
-    int mx = arr[0];
-    for (int i = 1; i < n; i++)
-        if (arr[i] > mx)
-            mx = arr[i];
-    return mx;
-}
 
-__device__ void countSort_opt(int arr[], int output[], int n, int exp)
+// removed getMax, we know when to stop know cause of fixed # of passes
+
+// base 16, so we have 4 bits per pass and 8 passed for 32-bit integers
+__device__ void countSort_opt(int arr[], int output[], int n, int shift)
 {
-    int i, count[10] = {0};
+    int i, count[16] = {0};
 
     for (i = 0; i < n; i++)
-        count[(arr[i] / exp) % 10]++;
+        count[(arr[i] >> shift) & 15]++;
 
-    for (i = 1; i < 10; i++)
+    for (i = 1; i < 16; i++)
         count[i] += count[i - 1];
 
     for (i = n - 1; i >= 0; i--)
     {
-        output[count[(arr[i] / exp) % 10] - 1] = arr[i];
-        count[(arr[i] / exp) % 10]--;
+        output[count[(arr[i] >> shift) & 15] - 1] = arr[i];
+        count[(arr[i] >> shift) & 15]--;
     }
 
     for (i = 0; i < n; i++)
@@ -88,9 +83,10 @@ __device__ void countSort_opt(int arr[], int output[], int n, int exp)
 
 __device__ void radixsort_opt(int arr[], int output[], int n)
 {
-    int m = getMax_opt(arr, n);
-    for (int exp = 1; m / exp > 0; exp *= 10)
-        countSort_opt(arr, output, n, exp);
+    for (int shift = 0; shift < 32; shift += 4)
+    {
+        countSort_opt(arr, output, n, shift);
+    }
 }
 
 __global__ void optimizedRadix(int *arr, int *output, int n)
