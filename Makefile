@@ -3,7 +3,7 @@ CC = /usr/bin/g++
 LD_FLAGS = -lrt
 
 # change to your local directory
-CUDA_PATH       ?= /usr/local/cuda-12.8
+CUDA_PATH       ?= /usr/local/cuda-12.6
 CUDA_INC_PATH   ?= $(CUDA_PATH)/include
 CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
 CUDA_LIB_PATH   ?= $(CUDA_PATH)/lib
@@ -15,10 +15,10 @@ CUDA_LIB_PATH   ?= $(CUDA_PATH)/lib
 #   sm_89 = Ada        (RTX 40xx)
 #   sm_120 = Blackwell (RTX 50xx)
 #   for the server, sm_86
-GENCODE_FLAGS   := -gencode arch=compute_120,code=sm_120
+GENCODE_FLAGS   := -gencode arch=compute_86,code=sm_86
 
 # Common binaries
-NVCC            ?= /usr/local/cuda-12.8/bin/nvcc # change to your local directory
+NVCC            ?= /usr/local/cuda-12.6/bin/nvcc # change to your local directory
 
 # OS-specific build flags
 ifeq ($(shell uname),Darwin)
