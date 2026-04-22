@@ -4,6 +4,7 @@
 #include "radix_device.cuh"
 #include <stdio.h>
 
+// unoptimized version
 __device__ int getMax(int arr[], int n)
 {
     int mx = arr[0];
@@ -15,7 +16,7 @@ __device__ int getMax(int arr[], int n)
 
 __device__ void countSort(int arr[], int output[], int n, int exp)
 {
-    int i, count[10] = { 0 };
+    int i, count[10] = {0};
 
     for (i = 0; i < n; i++)
         count[(arr[i] / exp) % 10]++;
@@ -23,7 +24,8 @@ __device__ void countSort(int arr[], int output[], int n, int exp)
     for (i = 1; i < 10; i++)
         count[i] += count[i - 1];
 
-    for (i = n - 1; i >= 0; i--) {
+    for (i = n - 1; i >= 0; i--)
+    {
         output[count[(arr[i] / exp) % 10] - 1] = arr[i];
         count[(arr[i] / exp) % 10]--;
     }
@@ -54,6 +56,58 @@ void cudaRadixSort(int *d_arr, int n)
     cudaFree(d_output);
 }
 
+// optimized version
+__device__ int getMax_opt(int arr[], int n)
+{
+    int mx = arr[0];
+    for (int i = 1; i < n; i++)
+        if (arr[i] > mx)
+            mx = arr[i];
+    return mx;
+}
+
+__device__ void countSort_opt(int arr[], int output[], int n, int exp)
+{
+    int i, count[10] = {0};
+
+    for (i = 0; i < n; i++)
+        count[(arr[i] / exp) % 10]++;
+
+    for (i = 1; i < 10; i++)
+        count[i] += count[i - 1];
+
+    for (i = n - 1; i >= 0; i--)
+    {
+        output[count[(arr[i] / exp) % 10] - 1] = arr[i];
+        count[(arr[i] / exp) % 10]--;
+    }
+
+    for (i = 0; i < n; i++)
+        arr[i] = output[i];
+}
+
+__device__ void radixsort_opt(int arr[], int output[], int n)
+{
+    int m = getMax_opt(arr, n);
+    for (int exp = 1; m / exp > 0; exp *= 10)
+        countSort_opt(arr, output, n, exp);
+}
+
+__global__ void optimizedRadix(int *arr, int *output, int n)
+{
+    radixsort_opt(arr, output, n);
+}
+
+void cudaOptimizedRadixSort(int *d_arr, int n)
+{
+    int *d_output;
+    cudaMalloc(&d_output, n * sizeof(int));
+    optimizedRadix<<<1, 1>>>(d_arr, d_output, n);
+    cudaDeviceSynchronize();
+    cudaFree(d_output);
+}
+
+// warmup kernel to initialize the GPU and avoid cold start overhead
 __global__ void warmupKernel() {}
 
 void cudaWarmup()

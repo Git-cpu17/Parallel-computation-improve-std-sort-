@@ -79,23 +79,29 @@ int main()
         int n = sizes[s];
         float gpu_ms = -1;
         float cpu_ms = -1;
+        float opt_ms = -1;
 
         // Allocate and fill host array
         int *h_arr = new int[n];
-        randomFill(h_arr, n);
-
-        // Allocate device memory and copy input
         int *d_arr;
+
+        randomFill(h_arr, n);
         gpuErrChk(cudaMalloc(&d_arr, n * sizeof(int)));
         gpuErrChk(cudaMemcpy(d_arr, h_arr, n * sizeof(int), cudaMemcpyHostToDevice));
-
-        // Time the sort
         START_TIMER();
         cudaRadixSort(d_arr, n);
         gpuErrChk(cudaDeviceSynchronize());
         STOP_RECORD_TIMER(gpu_ms);
+        gpuErrChk(cudaMemcpy(h_arr, d_arr, n * sizeof(int), cudaMemcpyDeviceToHost));
+        checkSorted(h_arr, n);
 
-        // Copy result back and verify
+        // optimized
+        randomFill(h_arr, n);
+        gpuErrChk(cudaMemcpy(d_arr, h_arr, n * sizeof(int), cudaMemcpyHostToDevice));
+        START_TIMER();
+        cudaOptimizedRadixSort(d_arr, n);
+        gpuErrChk(cudaDeviceSynchronize());
+        STOP_RECORD_TIMER(opt_ms);
         gpuErrChk(cudaMemcpy(h_arr, d_arr, n * sizeof(int), cudaMemcpyDeviceToHost));
         checkSorted(h_arr, n);
 
@@ -105,7 +111,8 @@ int main()
         std::sort(h_arr, h_arr + n);
         STOP_RECORD_TIMER(cpu_ms);
         checkSorted(h_arr, n);
-        printf("Size %6d | our radix:  %8.4f ms\n", n, gpu_ms);
+        printf("Size %6d | naive:  %8.4f ms\n", n, gpu_ms);
+        printf("Size %6d | optimized:  %8.4f ms\n", n, opt_ms);
         printf("Size %6d | std::sort:  %8.4f ms\n\n", n, cpu_ms);
 
         // Cleanup
