@@ -94,12 +94,52 @@ __global__ void optimizedRadix(int *arr, int *output, int n)
     radixsort_opt(arr, output, n);
 }
 
+#define BLOCK_SIZE 256
+#define RADIX_BITS 4
+#define RADIX_SIZE 16   // 2^4 = 16 buckets
+
+__global__ void optimizedRadixParallelHist(int *arr, int *output, int n, int shift)
+{
+    int tx = threadIdx.x;
+
+    // s_hist is shared across all 256 threads in the block
+    __shared__ int s_hist[RADIX_SIZE];
+
+    // threads 0-15 each zero one bucket; rest are idle here
+    if (tx < RADIX_SIZE)
+        s_hist[tx] = 0;
+    __syncthreads();
+
+    for (int i = tx; i < n; i += blockDim.x)
+        atomicAdd(&s_hist[(arr[i] >> shift) & (RADIX_SIZE - 1)], 1);
+    __syncthreads();
+
+    // same as countSort_opt
+    if (tx == 0)
+    {
+        for (int i = 1; i < RADIX_SIZE; i++)
+            s_hist[i] += s_hist[i - 1];
+
+        for (int i = n - 1; i >= 0; i--)
+        {
+            int digit = (arr[i] >> shift) & (RADIX_SIZE - 1);
+            output[--s_hist[digit]] = arr[i];
+        }
+        for (int i = 0; i < n; i++)
+            arr[i] = output[i];
+    }
+}
+
 void cudaOptimizedRadixSort(int *d_arr, int n)
 {
     int *d_output;
     cudaMalloc(&d_output, n * sizeof(int));
-    optimizedRadix<<<1, 1>>>(d_arr, d_output, n);
-    cudaDeviceSynchronize();
+    // one kernel launch per 4-bit pass (8 total) instead of one launch total
+    for (int shift = 0; shift < 32; shift += RADIX_BITS)
+    {
+        optimizedRadixParallelHist<<<1, BLOCK_SIZE>>>(d_arr, d_output, n, shift);
+        cudaDeviceSynchronize();
+    }
     cudaFree(d_output);
 }
 
