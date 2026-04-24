@@ -58,89 +58,121 @@ void cudaRadixSort(int *d_arr, int n)
 
 // optimized version
 
-// removed getMax, we know when to stop know cause of fixed # of passes
-
 // base 16, so we have 4 bits per pass and 8 passed for 32-bit integers
-__device__ void countSort_opt(int arr[], int output[], int n, int shift)
-{
-    int i, count[16] = {0};
-
-    for (i = 0; i < n; i++)
-        count[(arr[i] >> shift) & 15]++;
-
-    for (i = 1; i < 16; i++)
-        count[i] += count[i - 1];
-
-    for (i = n - 1; i >= 0; i--)
-    {
-        output[count[(arr[i] >> shift) & 15] - 1] = arr[i];
-        count[(arr[i] >> shift) & 15]--;
-    }
-
-    for (i = 0; i < n; i++)
-        arr[i] = output[i];
-}
-
-__device__ void radixsort_opt(int arr[], int output[], int n)
-{
-    for (int shift = 0; shift < 32; shift += 4)
-    {
-        countSort_opt(arr, output, n, shift);
-    }
-}
-
-__global__ void optimizedRadix(int *arr, int *output, int n)
-{
-    radixsort_opt(arr, output, n);
-}
-
 #define BLOCK_SIZE 256
 #define RADIX_BITS 4
-#define RADIX_SIZE 16   // 2^4 = 16 buckets
+#define RADIX_SIZE 16 // 2^4 = 16 buckets
 
-__global__ void optimizedRadixParallelHist(int *arr, int *output, int n, int shift)
+__global__ void blockHist(int *arr, int *block_hist, int n, int shift)
 {
-    int tx = threadIdx.x;
-
-    // s_hist is shared across all 256 threads in the block
     __shared__ int s_hist[RADIX_SIZE];
+    int tx = threadIdx.x;
+    int gid = blockIdx.x * blockDim.x + tx;
 
-    // threads 0-15 each zero one bucket; rest are idle here
     if (tx < RADIX_SIZE)
         s_hist[tx] = 0;
     __syncthreads();
 
-    for (int i = tx; i < n; i += blockDim.x)
-        atomicAdd(&s_hist[(arr[i] >> shift) & (RADIX_SIZE - 1)], 1);
+    if (gid < n)
+    {
+        int digit = (arr[gid] >> shift) & (RADIX_SIZE - 1);
+        atomicAdd(&s_hist[digit], 1);
+    }
     __syncthreads();
 
-    // same as countSort_opt
+    // write to global
+    if (tx < RADIX_SIZE)
+    {
+        block_hist[blockIdx.x * RADIX_SIZE + tx] = s_hist[tx];
+    }
+}
+
+__global__ void scatter(int *arr, int *output, int *block_offsets, int n, int shift)
+{
+    int tx = threadIdx.x;
+    int block_start = blockIdx.x * blockDim.x;
+
+    // s_pos[d] = where this block's next element with digit d should go
+    __shared__ int s_pos[RADIX_SIZE];
+
+    // load this block's starting offset for each bucket from global memory
+    // block_offsets is laid out bucket-major: [bucket][block]
+    if (tx < RADIX_SIZE)
+    {
+        s_pos[tx] = block_offsets[tx * gridDim.x + blockIdx.x];
+    }
+    __syncthreads();
+
+    // thread 0 of each block scatters its tile serially (preserves input order = stable)
+    // blocks still run in parallel with each other
     if (tx == 0)
     {
-        for (int i = 1; i < RADIX_SIZE; i++)
-            s_hist[i] += s_hist[i - 1];
-
-        for (int i = n - 1; i >= 0; i--)
+        int tile_end = min(block_start + blockDim.x, n);
+        for (int i = block_start; i < tile_end; i++)
         {
             int digit = (arr[i] >> shift) & (RADIX_SIZE - 1);
-            output[--s_hist[digit]] = arr[i];
+            output[s_pos[digit]++] = arr[i];
         }
-        for (int i = 0; i < n; i++)
-            arr[i] = output[i];
     }
 }
 
 void cudaOptimizedRadixSort(int *d_arr, int n)
 {
-    int *d_output;
+    int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    int *d_output, *d_block_hist, *d_block_offsets;
     cudaMalloc(&d_output, n * sizeof(int));
-    // one kernel launch per 4-bit pass (8 total) instead of one launch total
+    cudaMalloc(&d_block_hist, blocks * RADIX_SIZE * sizeof(int));
+    cudaMalloc(&d_block_offsets, blocks * RADIX_SIZE * sizeof(int));
+
+    int *h_block_hist = (int *)malloc(blocks * RADIX_SIZE * sizeof(int));
+    int *h_block_offsets = (int *)malloc(blocks * RADIX_SIZE * sizeof(int));
+
     for (int shift = 0; shift < 32; shift += RADIX_BITS)
     {
-        optimizedRadixParallelHist<<<1, BLOCK_SIZE>>>(d_arr, d_output, n, shift);
-        cudaDeviceSynchronize();
+        // per-block histograms on GPU
+        blockHist<<<blocks, BLOCK_SIZE>>>(d_arr, d_block_hist, n, shift);
+
+        // pull histograms back to host for the prefix-sum step
+        cudaMemcpy(h_block_hist, d_block_hist,
+                   blocks * RADIX_SIZE * sizeof(int), cudaMemcpyDeviceToHost);
+
+        // build per-block starting offsets in BUCKET-MAJOR order:
+        //   for each bucket d, block 0 starts at the running total,
+        //   block 1 starts right after block 0's bucket-d elements, etc.
+        // this way all bucket-0 elements come first, then bucket-1, etc.,
+        // AND within bucket d, block 0's elements come before block 1's (stability across blocks)
+        int running = 0;
+        for (int d = 0; d < RADIX_SIZE; d++)
+        {
+            for (int b = 0; b < blocks; b++)
+            {
+                h_block_offsets[d * blocks + b] = running;
+                running += h_block_hist[b * RADIX_SIZE + d];
+            }
+        }
+
+        cudaMemcpy(d_block_offsets, h_block_offsets,
+                   blocks * RADIX_SIZE * sizeof(int), cudaMemcpyHostToDevice);
+
+        // scatter: each block writes its tile into the right spots in output
+        scatter<<<blocks, BLOCK_SIZE>>>(d_arr, d_output, d_block_offsets, n, shift);
+
+        // swap: next pass reads from what we just wrote
+        int *tmp = d_arr;
+        d_arr = d_output;
+        d_output = tmp;
     }
+
+    cudaDeviceSynchronize();
+    free(h_block_hist);
+    free(h_block_offsets);
     cudaFree(d_output);
+    cudaFree(d_block_hist);
+    cudaFree(d_block_offsets);
+    // note: d_arr and d_output got swapped around — freeing d_output frees
+    // whichever buffer isn't the final result. After 8 passes (even), the
+    // caller's original buffer holds the final sorted data.
 }
 
 // warmup kernel to initialize the GPU and avoid cold start overhead
