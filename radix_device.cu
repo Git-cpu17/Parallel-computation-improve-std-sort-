@@ -56,49 +56,62 @@ void cudaRadixSort(int *d_arr, int n)
     cudaFree(d_output);
 }
 
-// optimized version
-
-// removed getMax, we know when to stop know cause of fixed # of passes
-
-// base 16, so we have 4 bits per pass and 8 passed for 32-bit integers
-__device__ void countSort_opt(int arr[], int output[], int n, int shift)
+__device__ void countSort_opt_shared(int arr[], int output[], int n, int shift)
 {
-    int i, count[16] = {0};
+    __shared__ int count[16];
+    int tid = threadIdx.x;
+    int blockSize = blockDim.x;
 
-    for (i = 0; i < n; i++)
-        count[(arr[i] >> shift) & 15]++;
+    // Initialize shared count
+    if (tid < 16) count[tid] = 0;
+    __syncthreads();
 
-    for (i = 1; i < 16; i++)
-        count[i] += count[i - 1];
+    // Each thread counts its portion
+    for (int i = tid; i < n; i += blockSize)
+        atomicAdd(&count[(arr[i] >> shift) & 15], 1);
+    __syncthreads();
 
-    for (i = n - 1; i >= 0; i--)
-    {
-        output[count[(arr[i] >> shift) & 15] - 1] = arr[i];
-        count[(arr[i] >> shift) & 15]--;
+    // Prefix sum in shared memory
+    if (tid == 0) {
+        for (int i = 1; i < 16; i++)
+            count[i] += count[i - 1];
     }
+    __syncthreads();
 
-    for (i = 0; i < n; i++)
+    // Each thread places its elements
+    for (int i = tid; i < n; i += blockSize)
+    {
+        int digit = (arr[i] >> shift) & 15;
+        int pos = atomicSub(&count[digit], 1) - 1;
+        output[pos] = arr[i];
+    }
+    __syncthreads();
+
+    // Copy back
+    for (int i = tid; i < n; i += blockSize)
         arr[i] = output[i];
 }
 
-__device__ void radixsort_opt(int arr[], int output[], int n)
+__device__ void radixsort_opt_parallel(int arr[], int output[], int n)
 {
     for (int shift = 0; shift < 32; shift += 4)
     {
-        countSort_opt(arr, output, n, shift);
+        countSort_opt_shared(arr, output, n, shift);
     }
 }
 
-__global__ void optimizedRadix(int *arr, int *output, int n)
+__global__ void optimizedRadixParallel(int *arr, int *output, int n)
 {
-    radixsort_opt(arr, output, n);
+    radixsort_opt_parallel(arr, output, n);
 }
 
 void cudaOptimizedRadixSort(int *d_arr, int n)
 {
     int *d_output;
     cudaMalloc(&d_output, n * sizeof(int));
-    optimizedRadix<<<1, 1>>>(d_arr, d_output, n);
+    // Use one block with 256 threads for small arrays
+    int blockSize = min(256, n);
+    optimizedRadixParallel<<<1, blockSize>>>(d_arr, d_output, n);
     cudaDeviceSynchronize();
     cudaFree(d_output);
 }
