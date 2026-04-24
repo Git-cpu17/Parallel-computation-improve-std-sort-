@@ -53,7 +53,7 @@ int main()
     cudaWarmup();
 
     // Sizes to benchmark, powers of 2
-    const int sizes[] = {1024, 4096, 16384};
+    const int sizes[] = {16384, 65536, 262144};
     const int num_sizes = sizeof(sizes) / sizeof(sizes[0]);
 
     cudaEvent_t start, stop;

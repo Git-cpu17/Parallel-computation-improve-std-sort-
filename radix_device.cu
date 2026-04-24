@@ -94,11 +94,19 @@ __device__ void countSort_opt_shared(int arr[], int output[], int n, int shift)
 
 __device__ void radixsort_opt_parallel(int arr[], int output[], int n)
 {
-    for (int shift = 0; shift < 32; shift += 4)
+    int tx = threadIdx.x;
+    int block_start = blockIdx.x * blockDim.x;
+
+    // s_pos[d] = where this block's next element with digit d should go
+    __shared__ int s_pos[RADIX_SIZE];
+
+    // load this block's starting offset for each bucket from global memory
+    // block_offsets is laid out bucket-major: [bucket][block]
+    if (tx < RADIX_SIZE)
     {
         countSort_opt_shared(arr, output, n, shift);
     }
-}
+    __syncthreads();
 
 __global__ void optimizedRadixParallel(int *arr, int *output, int n)
 {
@@ -107,13 +115,22 @@ __global__ void optimizedRadixParallel(int *arr, int *output, int n)
 
 void cudaOptimizedRadixSort(int *d_arr, int n)
 {
-    int *d_output;
+    int blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    int *d_output, *d_block_hist, *d_block_offsets;
     cudaMalloc(&d_output, n * sizeof(int));
     // Use one block with 256 threads for small arrays
     int blockSize = min(256, n);
     optimizedRadixParallel<<<1, blockSize>>>(d_arr, d_output, n);
     cudaDeviceSynchronize();
+    free(h_block_hist);
+    free(h_block_offsets);
     cudaFree(d_output);
+    cudaFree(d_block_hist);
+    cudaFree(d_block_offsets);
+    // note: d_arr and d_output got swapped around — freeing d_output frees
+    // whichever buffer isn't the final result. After 8 passes (even), the
+    // caller's original buffer holds the final sorted data.
 }
 
 // warmup kernel to initialize the GPU and avoid cold start overhead
