@@ -1,7 +1,8 @@
+*this branch is the last working version. please run tests on this branch*
 # CUDA Radix Sort
 
-Single-threaded LSD radix sort running on the GPU (1 block, 1 thread).
-Benchmarked against std::sort as a CPU baseline.
+Histogram base 16 radix sort running on the GPU.
+Benchmarked against std::sort and a single threaded naive approach as a CPU baseline.
 
 ## Files
 - `radix_device.cu` — GPU kernels and device functions
